@@ -1,20 +1,12 @@
-#!/bin/bash
-# ==============================================================================
-# Linux Blue Team Automation & Hardening Script - V2 (Integrated Guide)
-# Mode: --audit-only | --apply | --rollback | --help
-# ==============================================================================
-
 MODE=$1
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 BACKUP_DIR="/root/blueteam_backup_$TIMESTAMP"
 REPORT_FILE="/var/log/report_$TIMESTAMP.txt"
 SCORE=0
 
-# Scoring Flags
 FLAG_OS_ID=0; FLAG_BACKUP=0; FLAG_SSH_SAFE=0; FLAG_FW_ACTIVE=0; FLAG_F2B_ACTIVE=0
 FLAG_WAZUH=0; FLAG_NO_UID0=0; FLAG_NO_BAD_CONN=0; FLAG_NO_BAD_CRON=0; FLAG_NO_WEBSHELL=0
 
-# Formatting
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; CYAN='\033[0;36m'; NC='\033[0m'
 
 log() { echo -e "${CYAN}[*]${NC} $1" | tee -a "$REPORT_FILE"; }
@@ -41,7 +33,6 @@ init_report() {
     echo "=========================================================" >> "$REPORT_FILE"
 }
 
-# --- 1 & 2. Pre-check & Inventory ---
 identify_and_inventory() {
     log "Identifikasi Sistem & Inventaris Port..."
     OS=$(grep PRETTY_NAME /etc/os-release | cut -d '"' -f 2 2>/dev/null || echo "Unknown")
@@ -72,7 +63,6 @@ do_backup() {
     fi
 }
 
-# --- Fase 9 & 10: Audit, Deteksi Manual, & IR Triage ---
 audit_and_detect() {
     log "Melakukan Audit & Deteksi Lanjutan (Fase 9 & 10)..."
     echo -e "\n[+] SECURITY AUDIT & FINDINGS" >> "$REPORT_FILE"
@@ -87,7 +77,6 @@ audit_and_detect() {
     echo "INFO: 5 User terakhir di /etc/passwd:" >> "$REPORT_FILE"
     tail -n 5 /etc/passwd >> "$REPORT_FILE"
     
-    # Deteksi Reverse Shell Aktif (Fase 9)
     SUSP_PORTS=$(ss -tnp | grep -E ":4444|:9999|:1234|:5555|:6666")
     if [ -n "$SUSP_PORTS" ]; then
         warning "Koneksi mencurigakan ke port reverse shell umum terdeteksi!"
@@ -95,7 +84,6 @@ audit_and_detect() {
         echo "$SUSP_PORTS" >> "$REPORT_FILE"
     else FLAG_NO_BAD_CONN=10; fi
     
-    # Deteksi Webshell (Fase 9)
     if [ -d "/var/www" ]; then
         WEBSHELL=$(grep -REn "(eval\(|system\(|shell_exec\(|passthru\()" /var/www/ 2>/dev/null | head -n 10)
         if [ -n "$WEBSHELL" ]; then
@@ -105,7 +93,6 @@ audit_and_detect() {
         else FLAG_NO_WEBSHELL=10; fi
     else FLAG_NO_WEBSHELL=10; fi
     
-    # Deteksi Cronjob Backdoor (Fase 9)
     echo -e "\n[+] SUSPICIOUS CRONJOBS:" >> "$REPORT_FILE"
     CRON_FOUND=0
     for user in $(cut -f1 -d: /etc/passwd); do
@@ -117,7 +104,6 @@ audit_and_detect() {
     done
     if [ $CRON_FOUND -eq 0 ]; then FLAG_NO_BAD_CRON=10; fi
 
-    # Deteksi Injeksi SSH Key (Fase 9)
     echo -e "\n[+] AUTHORIZED KEYS FOUND:" >> "$REPORT_FILE"
     for user in $(cut -f1 -d: /etc/passwd); do
         home=$(eval echo ~$user)
@@ -127,19 +113,16 @@ audit_and_detect() {
         fi
     done
 
-    # Triage Insiden SSH (Fase 10)
     if [ -f "/var/log/auth.log" ]; then
         echo -e "\n[+] TOP 5 FAILED LOGIN IPs (Fase 10):" >> "$REPORT_FILE"
         grep "Failed password" /var/log/auth.log | awk '{print $11}' | sort | uniq -c | sort -rn | head -5 >> "$REPORT_FILE"
     fi
 }
 
-# --- Fase 3 & 8: Hardening & Wazuh Active Response ---
 apply_hardening() {
     if [ "$MODE" != "--apply" ]; then return; fi
     log "Menerapkan Hardening (Fase 3 & 8)..."
     
-    # SSH Hardening Aman
     sed -i 's/^#*PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
     if sshd -t; then
         systemctl restart sshd || systemctl restart ssh
@@ -148,7 +131,6 @@ apply_hardening() {
         cp "$BACKUP_DIR/sshd_config" /etc/ssh/sshd_config
     fi
     
-    # Wazuh Active Response Hardening (Fase 8)
     if [ -f "/var/ossec/etc/ossec.conf" ]; then
         log "Konfigurasi Wazuh Manager terdeteksi. Menyuntikkan Active Response..."
         if ! grep -q "firewall-drop" /var/ossec/etc/ossec.conf; then
@@ -156,7 +138,6 @@ apply_hardening() {
             sed -i '/<\/ossec_config>/i \  <active-response>\n    <command>firewall-drop<\/command>\n    <location>local<\/location>\n    <rules_id>5712,5710,31151,40101<\/rules_id>\n    <timeout>600<\/timeout>\n  <\/active-response>' /var/ossec/etc/ossec.conf
         fi
         
-        # Tambah Local Rule untuk Nmap
         if [ -f "/var/ossec/etc/rules/local_rules.xml" ]; then
             if ! grep -q "nmap,scan" /var/ossec/etc/rules/local_rules.xml; then
                 sed -i '/<\/group>/i \  <rule id="100001" level="10">\n    <if_sid>1002<\/if_sid>\n    <match>nmap<\/match>\n    <description>Nmap scan detected<\/description>\n  <\/rule>' /var/ossec/etc/rules/local_rules.xml
@@ -166,7 +147,6 @@ apply_hardening() {
         success "Wazuh Active Response dan Rule Nmap diaktifkan."
     fi
 
-    # UFW Hardening
     if command -v ufw >/dev/null; then
         ufw --force reset >/dev/null
         ufw default deny incoming
@@ -215,7 +195,6 @@ finalize_report() {
     success "Laporan tersimpan di: $REPORT_FILE"
 }
 
-# ==================== MAIN EXECUTION ====================
 if [[ "$MODE" != "--audit-only" && "$MODE" != "--apply" && "$MODE" != "--rollback" ]]; then show_help; fi
 check_root
 if [ "$MODE" == "--rollback" ]; then do_rollback; fi
